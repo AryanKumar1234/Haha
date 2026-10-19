@@ -1,0 +1,190 @@
+name: Build Arya Calci APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          sdk-platform: android-35
+          build-tools: 35.0.0
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Extract source zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(./*.zip)
+          if (( ${#zips[@]} == 0 )); then
+            echo "No .zip found at repo root. Put the decompiled source zip in the repository root."
+            exit 1
+          fi
+          zip="${zips[0]}"
+          echo "Using zip: $zip"
+          rm -rf extracted app build.gradle settings.gradle gradle.properties
+          mkdir -p extracted
+          unzip -q "$zip" -d extracted
+          test -f extracted/resources/AndroidManifest.xml
+          test -d extracted/sources
+          mkdir -p app/src/main/java app/src/main/res app/src/main/assets
+          cp extracted/resources/AndroidManifest.xml app/src/main/AndroidManifest.xml
+          cp -r extracted/resources/res/. app/src/main/res/
+          if [ -d extracted/resources/assets ]; then
+            cp -r extracted/resources/assets/. app/src/main/assets/
+          fi
+          cp -r extracted/sources/. app/src/main/java/
+          # Gradle generates R.java and BuildConfig.java; remove decompiled copies.
+          find app/src/main/java -type f \( -name 'R.java' -o -name 'R$*.java' -o -name 'BuildConfig.java' \) -delete
+
+      - name: Patch manifest and app name
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          mf = Path('app/src/main/AndroidManifest.xml')
+          s = mf.read_text()
+          s = re.sub(r'\s+android:compileSdkVersion(=Codename)?="[^"]*"', '', s)
+          s = re.sub(r'\s+platformBuildVersion(Code|Name)="[^"]*"', '', s)
+          mf.write_text(s)
+
+          for p in Path('app/src/main/res').glob('values*/strings.xml'):
+              t = p.read_text()
+              t = re.sub(
+                  r'(<string\s+name="app_name"\s*>).*?(</string>)',
+                  lambda m: m.group(1) + 'Arya calci' + m.group(3),
+                  t,
+                  flags=re.S,
+              )
+              p.write_text(t)
+          PY
+
+      - name: Create Gradle project
+        shell: bash
+        run: |
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'AryaCalci'
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=false
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              // Keep original package for R.java compatibility; change only install ID.
+              namespace 'com.google.android.calculator'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.arya.calci'
+                  minSdk 29
+                  targetSdk 35
+                  versionCode 85022647
+                  versionName '9.3 (Arya calci)'
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              lint {
+                  abortOnError false
+              }
+          }
+          EOF
+
+      - name: Build release APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Sign APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ANDROID_SDK_ROOT:=${ANDROID_HOME:?ANDROID_SDK_ROOT/ANDROID_HOME not set}}"
+          bt=$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
+          unsigned=$(find app/build/outputs/apk/release -name '*.apk' | head -n1)
+          test -n "$unsigned"
+
+          rm -f arya-calci-aligned.apk arya-calci.apk arya-calci.jks
+          keytool -genkeypair -v \
+            -keystore arya-calci.jks \
+            -alias arya \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Arya Calci, OU=Personal, O=Arya, L=NA, S=NA, C=IN" >/dev/null
+
+          "$bt/zipalign" -f -p 4 "$unsigned" arya-calci-aligned.apk
+          "$bt/apksigner" sign \
+            --ks arya-calci.jks \
+            --ks-key-alias arya \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out arya-calci.apk \
+            arya-calci-aligned.apk
+          "$bt/apksigner" verify --print-certs arya-calci.apk
+
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: arya-calci-v${{ github.run_number }}
+          name: Arya calci v${{ github.run_number }}
+          body: Built from the decompiled Calculator source zip. App label is patched to Arya calci and install ID is com.arya.calci.
+          files: arya-calci.apk
+          
