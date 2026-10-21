@@ -1,6 +1,7 @@
 name: Build and Release
 on:
   push:
+    branches: [main, master]
   workflow_dispatch:
 permissions:
   contents: write
@@ -9,32 +10,22 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - name: Extract source zip
-        run: |
-          ZIP=$(ls *.zip | head -n 1)
-          echo "Using $ZIP"
-          mkdir src
-          unzip -q "$ZIP" -d src
-          ls -la src
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 11
       - name: Decode keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $RUNNER_TEMP/release.jks
-      - name: Build
-        working-directory: src
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
-          mv app/build/outputs/apk/release/app-release.apk LokiBoard-Pixel-${{ github.run_number }}.apk
+      - run: chmod +x gradlew
+      - run: ./gradlew assembleRelease --stacktrace
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - run: mv app/build/outputs/apk/release/app-release.apk LokiBoard-Pixel-${{ github.run_number }}.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: LokiBoard Pixel build ${{ github.run_number }}
-          files: src/LokiBoard-Pixel-${{ github.run_number }}.apk
+          files: LokiBoard-Pixel-${{ github.run_number }}.apk
