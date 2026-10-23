@@ -41,7 +41,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
-          mv app/build/outputs/apk/release/app-release.apk LokiBoard-Pixel-${{ github.run_number }}.apk
+          mv app/build/outputs/apk/release/app-release.apk onioboard-Pixel-${{ github.run_number }}.apk
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -51,5 +51,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
-          name: LokiBoard Pixel build ${{ github.run_number }}
-          files: src/LokiBoard-Pixel-${{ github.run_number }}.apk
+          name: onioboard Pixel build ${{ github.run_number }}
+          files: src/onioboard-Pixel-${{ github.run_number }}.apk
